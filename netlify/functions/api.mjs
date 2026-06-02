@@ -1,14 +1,11 @@
 import crypto from "node:crypto";
 import { getStore } from "@netlify/blobs";
 
-const users = getStore("todo-users");
-const todoData = getStore("todo-user-data");
 const secret = process.env.JWT_SECRET;
 
-const json = (statusCode, body) => ({
-  statusCode,
-  headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
-  body: JSON.stringify(body)
+const json = (status, body) => Response.json(body, {
+  status,
+  headers: { "Cache-Control": "no-store" }
 });
 
 const base64url = (value) => Buffer.from(value).toString("base64url");
@@ -23,8 +20,8 @@ function signToken(userId) {
   return `${header}.${payload}.${signature}`;
 }
 
-function readToken(event) {
-  const auth = event.headers.authorization || event.headers.Authorization || "";
+function readToken(request) {
+  const auth = request.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   const [header, payload, signature] = token.split(".");
   if (!header || !payload || !signature) throw new Error("请重新登录");
@@ -35,23 +32,23 @@ function readToken(event) {
   return decoded.sub;
 }
 
-function parseBody(event) {
+async function parseBody(request) {
   try {
-    return JSON.parse(event.body || "{}");
+    return await request.json();
   } catch {
     throw new Error("请求内容格式错误");
   }
 }
 
-function apiPath(event) {
-  return event.path.replace(/^\/api/, "").replace(/^\/\.netlify\/functions\/api/, "") || "/";
+function apiPath(request) {
+  return new URL(request.url).pathname.replace(/^\/api/, "").replace(/^\/\.netlify\/functions\/api/, "") || "/";
 }
 
-async function loadTodos(userId) {
+async function loadTodos(todoData, userId) {
   return (await todoData.get(dataKey(userId), { type: "json", consistency: "strong" })) || { tasks: [] };
 }
 
-async function saveTodos(userId, data) {
+async function saveTodos(todoData, userId, data) {
   await todoData.setJSON(dataKey(userId), data);
 }
 
@@ -66,13 +63,15 @@ function cleanTask(task, id = crypto.randomUUID()) {
   };
 }
 
-export const handler = async (event) => {
+export default async (request) => {
   try {
     if (!secret) return json(500, { error: "服务端尚未配置 JWT_SECRET" });
-    const path = apiPath(event);
+    const users = getStore("todo-users");
+    const todoData = getStore("todo-user-data");
+    const path = apiPath(request);
 
-    if (event.httpMethod === "POST" && path === "/register") {
-      const { email = "", passwordHash = "" } = parseBody(event);
+    if (request.method === "POST" && path === "/register") {
+      const { email = "", passwordHash = "" } = await parseBody(request);
       const normalizedEmail = email.trim().toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return json(400, { error: "请输入有效邮箱" });
       if (!/^[a-f0-9]{64}$/.test(passwordHash)) return json(400, { error: "密码格式错误" });
@@ -80,12 +79,12 @@ export const handler = async (event) => {
       if (await users.get(key, { type: "json", consistency: "strong" })) return json(409, { error: "这个邮箱已经注册" });
       const user = { id: crypto.randomUUID(), email: normalizedEmail, passwordHash, createdAt: new Date().toISOString() };
       await users.setJSON(key, user);
-      await saveTodos(user.id, { tasks: [] });
+      await saveTodos(todoData, user.id, { tasks: [] });
       return json(201, { token: signToken(user.id), email: user.email });
     }
 
-    if (event.httpMethod === "POST" && path === "/login") {
-      const { email = "", passwordHash = "" } = parseBody(event);
+    if (request.method === "POST" && path === "/login") {
+      const { email = "", passwordHash = "" } = await parseBody(request);
       const normalizedEmail = email.trim().toLowerCase();
       const user = await users.get(userKey(normalizedEmail), { type: "json", consistency: "strong" });
       const supplied = Buffer.from(String(passwordHash));
@@ -94,33 +93,33 @@ export const handler = async (event) => {
       return json(200, { token: signToken(user.id), email: user.email });
     }
 
-    const userId = readToken(event);
-    const data = await loadTodos(userId);
+    const userId = readToken(request);
+    const data = await loadTodos(todoData, userId);
 
-    if (event.httpMethod === "GET" && path === "/todos") return json(200, data);
+    if (request.method === "GET" && path === "/todos") return json(200, data);
 
-    if (event.httpMethod === "POST" && path === "/todos") {
-      const task = cleanTask(parseBody(event));
+    if (request.method === "POST" && path === "/todos") {
+      const task = cleanTask(await parseBody(request));
       if (!task.title) return json(400, { error: "事项标题不能为空" });
       data.tasks.unshift(task);
-      await saveTodos(userId, data);
+      await saveTodos(todoData, userId, data);
       return json(201, task);
     }
 
     const match = path.match(/^\/todos\/([^/]+)$/);
-    if (match && event.httpMethod === "PUT") {
+    if (match && request.method === "PUT") {
       const index = data.tasks.findIndex((task) => task.id === match[1]);
       if (index < 0) return json(404, { error: "事项不存在" });
-      data.tasks[index] = cleanTask({ ...data.tasks[index], ...parseBody(event) }, data.tasks[index].id);
+      data.tasks[index] = cleanTask({ ...data.tasks[index], ...await parseBody(request) }, data.tasks[index].id);
       if (!data.tasks[index].title) return json(400, { error: "事项标题不能为空" });
-      await saveTodos(userId, data);
+      await saveTodos(todoData, userId, data);
       return json(200, data.tasks[index]);
     }
 
-    if (match && event.httpMethod === "DELETE") {
+    if (match && request.method === "DELETE") {
       const next = data.tasks.filter((task) => task.id !== match[1]);
       if (next.length === data.tasks.length) return json(404, { error: "事项不存在" });
-      await saveTodos(userId, { tasks: next });
+      await saveTodos(todoData, userId, { tasks: next });
       return json(200, { ok: true });
     }
 
