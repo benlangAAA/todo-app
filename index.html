@@ -310,6 +310,7 @@
     </div>
   </div>
 
+  <script src="date-parser.js"></script>
   <script>
     const AUTH_TOKEN_KEY = "today.authToken.v1";
     const AUTH_EMAIL_KEY = "today.authEmail.v1";
@@ -470,30 +471,8 @@
     }
     function render() { renderTasks(); renderPlan(); }
     function escapeHtml(text) { const div = document.createElement("div"); div.textContent = text; return div.innerHTML; }
-    function dateFromParts(year, month, day) {
-      const date = new Date(Number(year) || new Date().getFullYear(), Number(month) - 1, Number(day));
-      return date.toLocaleDateString("sv-SE");
-    }
-    function weekdayDate(weekday, nextWeek = false) {
-      const date = new Date();
-      const current = date.getDay() || 7;
-      let offset = Number(weekday) - current;
-      if (nextWeek) offset += offset > 0 ? 7 : 14;
-      else if (offset < 0) offset += 7;
-      date.setDate(date.getDate() + offset);
-      return date.toLocaleDateString("sv-SE");
-    }
     function resolveDueDate(text) {
-      const exact = text.match(/(?:(\d{4})[年/-])?(\d{1,2})[月/-](\d{1,2})日?/);
-      if (exact) return dateFromParts(exact[1], exact[2], exact[3]);
-      const nextWeekday = text.match(/下周([一二三四五六日天])/);
-      const weekdayMap = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
-      if (nextWeekday) return weekdayDate(weekdayMap[nextWeekday[1]], true);
-      if (/周末/.test(text)) return weekdayDate(6);
-      if (/后天/.test(text)) return localDate(2);
-      if (/明天/.test(text)) return localDate(1);
-      if (/今天/.test(text)) return localDate();
-      return "";
+      return TodoDateParser.resolveDueDate(text);
     }
     function inferredPriority(text, due) {
       const diff = due ? daysUntil(due) : 9999;
@@ -505,7 +484,8 @@
       const verb = text.match(/(?:做|交|完成|复习|写|准备|提交|整理)(.+)/);
       let title = verb ? verb[0] : text;
       title = title
-        .replace(/^(?:今天|明天|后天|周末|下周[一二三四五六日天]|\d{1,4}[年/-]\d{1,2}[月/-]\d{1,2}日?)/, "")
+        .replace(/^\s*(?:记得|别忘了|一定要|务必|尽快|要|需要|得)+/, "")
+        .replace(/^(.+)$/, value => TodoDateParser.stripDateExpressions(value))
         .replace(/^(?:上午|下午|晚上|早上)?\d{1,2}(?:点|:)\d{0,2}(?:分)?(?:前|之前)?/, "")
         .replace(/^(?:记得|别忘了|一定要|务必|尽快|要|需要|得)+/, "")
         .replace(/[，。；;,.！!？?]/g, "")
